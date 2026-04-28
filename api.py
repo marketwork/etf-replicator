@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from data import fetch_prices, to_returns, get_universe, get_stock_meta
+from data import fetch_prices, to_returns, get_universe, get_stock_meta, normalize_ticker
 from optimizer import replicate
 
 app = FastAPI(title="ETF Replicator", docs_url=None, redoc_url=None)
@@ -56,8 +56,9 @@ async def optimize(req: OptimizeRequest):
         try:
             _push({"type": "progress", "pct": 5, "text": "Fetching constituent universe…"})
 
-            custom = [t.strip().upper() for t in req.custom_universe if t.strip()]
-            universe, label = get_universe(req.etf.upper(), custom or None)
+            etf_norm = normalize_ticker(req.etf)
+            custom = [normalize_ticker(t) for t in req.custom_universe if t.strip()]
+            universe, label = get_universe(etf_norm, custom or None)
 
             if not universe:
                 _push({"type": "error",
@@ -70,10 +71,10 @@ async def optimize(req: OptimizeRequest):
             _push({"type": "progress", "pct": 12,
                    "text": f"Universe: {label}. Downloading prices…"})
 
-            all_tickers = sorted(set([req.etf.upper()] + universe))
+            all_tickers = sorted(set([etf_norm] + universe))
             prices = fetch_prices(all_tickers, req.start, req.end)
 
-            etf_up = req.etf.upper()
+            etf_up = etf_norm
             if etf_up not in prices.columns:
                 _push({"type": "error",
                        "message": f"No price data found for {etf_up}. Check the ticker and date range."})
