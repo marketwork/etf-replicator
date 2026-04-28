@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "etf-replicator",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8511"],
+      "port": 8511
+    }
+  ]
+}
