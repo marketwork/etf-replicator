@@ -226,3 +226,74 @@ def replicate(
         "n_stocks": len(selected),
         "train_cutoff": idx[split - 1],
     }
+
+
+def evaluate(
+    etf_r: pd.Series,
+    stock_r: pd.DataFrame,
+    weights_dict: dict,
+    train_frac: float = 0.70,
+) -> dict:
+    """
+    Evaluate a user-supplied portfolio against an ETF.
+
+    Parameters
+    ----------
+    etf_r       : daily return series for the target ETF
+    stock_r     : daily return frame containing at least the portfolio tickers
+    weights_dict: {ticker: weight} — weights will be normalised to sum to 1
+    train_frac  : fraction of history labelled "in-sample"
+
+    Returns same key schema as replicate() for drop-in rendering.
+    """
+    idx = etf_r.index.intersection(stock_r.index)
+    e_all = etf_r.loc[idx]
+    s_all = stock_r.loc[idx].ffill().fillna(0.0)
+
+    # Keep only tickers present in price data
+    tickers = [t for t in weights_dict if t in s_all.columns]
+    missing = [t for t in weights_dict if t not in s_all.columns]
+    if not tickers:
+        raise ValueError(
+            f"None of the portfolio tickers were found in price data. "
+            f"Missing: {list(weights_dict)[:10]}"
+        )
+
+    raw_w = np.array([weights_dict[t] for t in tickers], dtype=float)
+    w = raw_w / raw_w.sum()
+
+    port_all = pd.Series(s_all[tickers].values @ w, index=idx, name="Portfolio")
+    etf_all  = e_all.rename("ETF")
+
+    split = int(len(idx) * train_frac)
+    e_is, p_is = e_all.iloc[:split], port_all.iloc[:split]
+    e_oos, p_oos = e_all.iloc[split:], port_all.iloc[split:]
+
+    def _metrics(e, p):
+        te   = _ann_te(e.values, p.values)
+        corr = float(np.corrcoef(e.values, p.values)[0, 1]) if len(e) > 2 else 0.0
+        ss_r = float(np.sum((e.values - p.values) ** 2))
+        ss_t = float(np.sum((e.values - e.mean()) ** 2))
+        r2   = 1.0 - ss_r / ss_t if ss_t > 0 else 0.0
+        return te, corr, r2
+
+    te_is,  corr_is,  r2_is  = _metrics(e_is,  p_is)
+    te_oos, corr_oos, _      = _metrics(e_oos, p_oos) if len(e_oos) > 20 else (te_is, corr_is, None)
+
+    return {
+        "tickers":           tickers,
+        "weights":           w,
+        "missing":           missing,
+        "etf_returns":       etf_all,
+        "port_returns":      port_all,
+        "etf_cum":           (1 + etf_all).cumprod(),
+        "port_cum":          (1 + port_all).cumprod(),
+        "rolling_te":        (port_all - etf_all).rolling(63).std() * np.sqrt(252),
+        "tracking_error":    te_is,
+        "correlation":       corr_is,
+        "r_squared":         r2_is,
+        "oos_tracking_error": te_oos,
+        "oos_correlation":   corr_oos,
+        "n_stocks":          len(tickers),
+        "train_cutoff":      idx[split - 1],
+    }

@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from data import fetch_prices, to_returns, get_universe, get_stock_meta, normalize_ticker
-from optimizer import replicate
+from optimizer import replicate, evaluate
 
 app = FastAPI(title="ETF Replicator", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -114,6 +114,87 @@ async def optimize(req: OptimizeRequest):
             import traceback
             _push({"type": "error",
                    "message": str(exc),
+                   "detail": traceback.format_exc()})
+
+    loop.run_in_executor(_pool, _work)
+
+    async def _stream():
+        while True:
+            msg = await queue.get()
+            yield f"data: {json.dumps(msg)}\n\n"
+            if msg["type"] in ("done", "error"):
+                break
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── /api/evaluate ─────────────────────────────────────────────────────────────
+
+class EvaluateRequest(BaseModel):
+    etf: str
+    portfolio: dict  # {ticker: weight}
+    start: str
+    end: str
+    train_frac: float = Field(0.70, ge=0.40, le=0.95)
+
+
+@app.post("/api/evaluate")
+async def evaluate_endpoint(req: EvaluateRequest):
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _push(msg: dict):
+        asyncio.run_coroutine_threadsafe(queue.put(msg), loop)
+
+    def _work():
+        try:
+            etf_norm = normalize_ticker(req.etf)
+            port_norm = {normalize_ticker(t): float(w)
+                         for t, w in req.portfolio.items() if w > 0}
+
+            if not port_norm:
+                _push({"type": "error", "message": "Portfolio is empty."})
+                return
+
+            all_tickers = sorted(set([etf_norm] + list(port_norm.keys())))
+            _push({"type": "progress", "pct": 10,
+                   "text": f"Downloading prices for {len(all_tickers)} tickers…"})
+
+            prices = fetch_prices(all_tickers, req.start, req.end)
+
+            if etf_norm not in prices.columns:
+                _push({"type": "error",
+                       "message": f"No price data for {etf_norm}."})
+                return
+
+            _push({"type": "progress", "pct": 55, "text": "Computing metrics…"})
+
+            returns = to_returns(prices, min_coverage=0.50)
+            etf_r   = returns[etf_norm]
+            stock_r = returns.drop(columns=[etf_norm], errors="ignore")
+
+            result = evaluate(
+                etf_r=etf_r,
+                stock_r=stock_r,
+                weights_dict=port_norm,
+                train_frac=req.train_frac,
+            )
+
+            _push({"type": "progress", "pct": 85, "text": "Fetching metadata…"})
+            meta = get_stock_meta(result["tickers"])
+
+            payload = _serialize(result, meta, f"user portfolio ({len(port_norm)} stocks)")
+            payload["missing"] = result.get("missing", [])
+            payload["mode"] = "evaluate"
+            _push({"type": "done", "result": payload})
+
+        except Exception as exc:
+            import traceback
+            _push({"type": "error", "message": str(exc),
                    "detail": traceback.format_exc()})
 
     loop.run_in_executor(_pool, _work)

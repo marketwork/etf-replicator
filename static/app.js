@@ -22,7 +22,8 @@ const PIE_COLORS = [
   '#56B6C2','#E06C75','#98C379','#D19A66','#ABB2BF','#61AFEF',
 ];
 
-let _result = null; // holds last optimisation result
+let _result = null;
+let _mode   = 'optimise';
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -40,6 +41,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.tab-btn').forEach(btn =>
     btn.addEventListener('click', () => switchTab(btn.dataset.tab))
   );
+
+  // Mode switcher
+  document.querySelectorAll('.mode-btn').forEach(btn =>
+    btn.addEventListener('click', () => setMode(btn.dataset.mode))
+  );
+
+  // Live portfolio preview
+  $('portfolio-input').addEventListener('input', updatePortfolioPreview);
 });
 
 function fmt(d) { return d.toISOString().split('T')[0]; }
@@ -48,6 +57,19 @@ function $(id)  { return document.getElementById(id); }
 function bindSlider(sliderId, labelId) {
   const sl = $(sliderId), lb = $(labelId);
   sl.addEventListener('input', () => { lb.textContent = sl.value; });
+}
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+function setMode(mode) {
+  _mode = mode;
+  document.querySelectorAll('.mode-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode)
+  );
+  document.querySelectorAll('.mode-section').forEach(s => {
+    s.style.display = s.dataset.for === mode ? 'flex' : 'none';
+  });
+  $('run-label').textContent = mode === 'evaluate' ? 'Evaluate portfolio' : 'Run optimisation';
+  showView('landing');
 }
 
 // ── Views ─────────────────────────────────────────────────────────────────────
@@ -87,6 +109,8 @@ function switchTab(tabId) {
 
 // ── Run ───────────────────────────────────────────────────────────────────────
 function runOptimisation() {
+  if (_mode === 'evaluate') { runEvaluate(); return; }
+
   const etf = $('etf').value.trim().toUpperCase();
   if (!etf) { alert('Enter an ETF ticker.'); return; }
 
@@ -99,7 +123,7 @@ function runOptimisation() {
   showView('loading');
   setProgress(0, 'Initialising…');
 
-  const body = {
+  streamSSE('/api/optimize', {
     etf,
     start:           $('start').value,
     end:             $('end').value,
@@ -108,9 +132,36 @@ function runOptimisation() {
     train_frac:      +$('train-pct').value / 100,
     min_coverage:    0.80,
     custom_universe: custom,
-  };
+  });
+}
 
-  fetch('/api/optimize', {
+function runEvaluate() {
+  const etf  = $('etf').value.trim().toUpperCase();
+  const text = $('portfolio-input').value.trim();
+  if (!etf)  { alert('Enter an ETF ticker.'); return; }
+  if (!text) { alert('Enter at least one portfolio ticker.'); return; }
+
+  const portfolio = parsePortfolio(text);
+  if (!Object.keys(portfolio).length) {
+    alert('Could not parse any tickers. Check the format and try again.');
+    return;
+  }
+
+  setRunning(true);
+  showView('loading');
+  setProgress(0, 'Downloading prices…');
+
+  streamSSE('/api/evaluate', {
+    etf,
+    portfolio,
+    start:      $('start').value,
+    end:        $('end').value,
+    train_frac: +$('train-pct').value / 100,
+  });
+}
+
+function streamSSE(url, body) {
+  fetch(url, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify(body),
@@ -119,7 +170,6 @@ function runOptimisation() {
     const reader  = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-
     (function pump() {
       reader.read().then(({ done, value }) => {
         if (done) return;
@@ -139,6 +189,49 @@ function runOptimisation() {
   .catch(e => showError(e.message));
 }
 
+// ── Portfolio parser ──────────────────────────────────────────────────────────
+function parsePortfolio(text) {
+  const lines = text.split(/\n/).map(s => s.trim()).filter(Boolean);
+  const entries = [];
+
+  for (const line of lines) {
+    const parts = line.replace(/,/g, ' ').trim().split(/\s+/);
+    if (!parts[0]) continue;
+    const ticker = parts[0].toUpperCase();
+    let weight = null;
+    if (parts.length >= 2) {
+      const raw = parts[1].replace('%', '');
+      const v   = parseFloat(raw);
+      if (!isNaN(v)) weight = parts[1].includes('%') ? v / 100 : v;
+    }
+    entries.push({ ticker, weight });
+  }
+
+  if (!entries.length) return {};
+
+  const hasWeights = entries.some(e => e.weight !== null);
+  const result = {};
+  if (hasWeights) {
+    const total = entries.reduce((s, e) => s + (e.weight ?? 0), 0) || 1;
+    entries.forEach(e => { result[e.ticker] = (e.weight ?? 0) / total; });
+  } else {
+    entries.forEach(e => { result[e.ticker] = 1 / entries.length; });
+  }
+  return result;
+}
+
+function updatePortfolioPreview() {
+  const portfolio = parsePortfolio($('portfolio-input').value);
+  const wrap = $('portfolio-preview');
+  const keys = Object.keys(portfolio);
+  if (!keys.length) { wrap.style.display = 'none'; return; }
+
+  wrap.style.display = 'flex';
+  wrap.innerHTML = keys.map(t =>
+    `<span class="ptag">${t} <b>${p1(portfolio[t])}</b></span>`
+  ).join('');
+}
+
 function onMsg(msg) {
   if (msg.type === 'progress') {
     setProgress(msg.pct, msg.text);
@@ -155,10 +248,22 @@ function onMsg(msg) {
 function renderResults(d) {
   setProgress(100, 'Done!');
 
-  $('results-title').textContent =
-    `${d.etf} Replica — ${d.n_stocks} stock${d.n_stocks !== 1 ? 's' : ''}`;
+  const isEval = d.mode === 'evaluate';
+  $('results-title').textContent = isEval
+    ? `Portfolio vs ${d.etf} — ${d.n_stocks} stock${d.n_stocks !== 1 ? 's' : ''}`
+    : `${d.etf} Replica — ${d.n_stocks} stock${d.n_stocks !== 1 ? 's' : ''}`;
   $('results-caption').textContent =
-    `Universe: ${d.universe_label} · Train: ${d.dates[0]} → ${d.train_cutoff} · OOS: ${d.train_cutoff} → ${d.dates.at(-1)}`;
+    `${isEval ? 'Portfolio' : 'Universe'}: ${d.universe_label} · Train: ${d.dates[0]} → ${d.train_cutoff} · OOS: ${d.train_cutoff} → ${d.dates.at(-1)}`;
+
+  // Show missing tickers warning for evaluate mode
+  const existingWarn = document.querySelector('.missing-warn');
+  if (existingWarn) existingWarn.remove();
+  if (isEval && d.missing && d.missing.length) {
+    const warn = document.createElement('div');
+    warn.className = 'missing-warn';
+    warn.textContent = `No price data found for: ${d.missing.join(', ')}. These were excluded.`;
+    $('results-title').insertAdjacentElement('afterend', warn);
+  }
 
   renderMetrics(d);
 

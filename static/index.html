@@ -22,10 +22,16 @@
 
     <div class="divider"></div>
 
+    <!-- Mode switcher -->
+    <div class="mode-switch">
+      <button class="mode-btn active" data-mode="optimise">Optimise</button>
+      <button class="mode-btn" data-mode="evaluate">Evaluate</button>
+    </div>
+
     <div class="controls">
       <div class="form-group">
         <label for="etf">Target ETF</label>
-        <input type="text" id="etf" value="SPY" placeholder="e.g. SPY, QQQ, XLK" autocomplete="off" spellcheck="false">
+        <input type="text" id="etf" value="SPY" placeholder="e.g. SPY US, 2828 HK" autocomplete="off" spellcheck="false">
         <div class="hint">SPY · QQQ · ACWI · EWY · 2828 HK · 3033 HK · 3147 HK</div>
       </div>
 
@@ -40,19 +46,32 @@
         </div>
       </div>
 
-      <div class="form-group">
-        <label>Stocks in replica: <span id="n-stocks-val" class="val-badge">25</span></label>
-        <input type="range" id="n-stocks" min="20" max="30" value="25" class="slider">
-        <div class="slider-ticks"><span>20</span><span>25</span><span>30</span></div>
+      <!-- Optimise-only controls -->
+      <div class="mode-section" data-for="optimise">
+        <div class="form-group">
+          <label>Stocks in replica: <span id="n-stocks-val" class="val-badge">25</span></label>
+          <input type="range" id="n-stocks" min="20" max="30" value="25" class="slider">
+          <div class="slider-ticks"><span>20</span><span>25</span><span>30</span></div>
+        </div>
+        <div class="form-group">
+          <label for="method">Selection method</label>
+          <select id="method">
+            <option value="lasso">LASSO — fast (~5 s)</option>
+            <option value="greedy">Greedy — moderate (~30 s)</option>
+            <option value="hybrid">Hybrid — best quality (~45 s)</option>
+          </select>
+        </div>
       </div>
 
-      <div class="form-group">
-        <label for="method">Selection method</label>
-        <select id="method">
-          <option value="lasso">LASSO — fast (~5 s)</option>
-          <option value="greedy">Greedy — moderate (~30 s)</option>
-          <option value="hybrid">Hybrid — best quality (~45 s)</option>
-        </select>
+      <!-- Evaluate-only controls -->
+      <div class="mode-section" data-for="evaluate" style="display:none">
+        <div class="form-group">
+          <label for="portfolio-input">Your portfolio</label>
+          <textarea id="portfolio-input" rows="10"
+            placeholder="One ticker per line, weight optional:&#10;&#10;AAPL 0.25&#10;MSFT 20%&#10;NVDA&#10;005930.KS 0.10&#10;0700.HK 15%"></textarea>
+          <div class="hint">Weights auto-normalise to 100%. Omit for equal weighting.</div>
+        </div>
+        <div id="portfolio-preview" class="portfolio-preview" style="display:none"></div>
       </div>
 
       <details id="adv-details">
@@ -62,11 +81,13 @@
             <label>Training data: <span id="train-pct-val" class="val-badge">70</span>%</label>
             <input type="range" id="train-pct" min="50" max="90" value="70" class="slider">
           </div>
-          <div class="form-group">
-            <label for="custom-universe">Custom universe (optional)</label>
-            <textarea id="custom-universe" rows="3"
-              placeholder="Paste tickers separated by commas or newlines&#10;e.g. AAPL, MSFT, NVDA, …"></textarea>
-            <div class="hint">Overrides automatic constituent lookup</div>
+          <div class="mode-section" data-for="optimise">
+            <div class="form-group">
+              <label for="custom-universe">Custom universe (optional)</label>
+              <textarea id="custom-universe" rows="3"
+                placeholder="Paste tickers separated by commas or newlines&#10;e.g. AAPL, MSFT, NVDA, …"></textarea>
+              <div class="hint">Overrides automatic constituent lookup</div>
+            </div>
           </div>
         </div>
       </details>
